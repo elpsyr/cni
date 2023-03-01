@@ -38,7 +38,7 @@ import (
 type CmdArgs struct {
 	ContainerID string
 	Netns       string
-	IfName      string
+	IfName      string // interface name 网络接口名称/网卡名称
 	Args        string
 	Path        string
 	StdinData   []byte

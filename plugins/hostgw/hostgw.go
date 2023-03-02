@@ -130,15 +130,24 @@ func (h HostGatewayCNI) Bootstrap(args *skel.CmdArgs, pluginConfig *cni.PluginCo
 
 func (h HostGatewayCNI) Unmount(args *skel.CmdArgs, pluginConfig *cni.PluginConf) error {
 	//TODO implement me
-	panic("implement me")
+	return nil
 }
 
 func (h HostGatewayCNI) Check(args *skel.CmdArgs, pluginConfig *cni.PluginConf) error {
 	//TODO implement me
-	panic("implement me")
+	return nil
 }
 
 func (h HostGatewayCNI) GetMode() string {
-	//TODO implement me
-	panic("implement me")
+	return MODE
+}
+
+func init() {
+	hostGatewayCNI := &HostGatewayCNI{}
+	manager := cni.GetCNIManager()
+	err := manager.Register(hostGatewayCNI)
+	if err != nil {
+		utils.WriteLog("注册 host gw cni 失败: ", err.Error())
+		panic(err.Error())
+	}
 }

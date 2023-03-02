@@ -7,6 +7,7 @@ import (
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/elpsyr/cni/pkg/utils"
+	"github.com/elpsyr/ipam"
 	"github.com/vishvananda/netlink"
 	"net"
 	"os"
@@ -109,6 +110,83 @@ func CreateBridgeAndCreateVethAndSetNetworkDeviceStatusAndSetVethMaster(
 	})
 
 	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func SetOtherHostRouteToCurrentHost(networks []*ipam.Network, currentNetwork *ipam.Network) error {
+
+	link, err := netlink.LinkByName(currentNetwork.Name)
+
+	list, _ := netlink.RouteList(link, netlink.FAMILY_V4)
+
+	if err != nil {
+		return err
+	}
+
+	for _, network := range networks {
+		if !network.IsCurrentHost {
+			// 对于其他主机, 需要获取到其他主机的对外网卡 ip, 以及它的 pods 们所占用的网段的 cidr
+			// 然后用这个 cidr 和这个 ip 做一个路由表的映射
+			if link == nil {
+				return err
+			}
+
+			_, cidr, err := net.ParseCIDR(network.CIDR)
+			if err != nil {
+				return err
+			}
+
+			// 检查当前网络是否已经存在于当前主机的路由表中，以免重复添加
+			isSkip := false
+			for _, l := range list {
+				if l.Dst != nil && l.Dst.String() == network.CIDR {
+					isSkip = true
+					break
+				}
+			}
+
+			if isSkip {
+				// fmt.Println(network.CIDR, " 已存在路由表中, 直接跳过")
+				continue
+			}
+
+			ip := net.ParseIP(network.IP)
+
+			// 发往cidr的流量会通过link发往ip这个地址
+			err = AddHostRoute(cidr, ip, link)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// AddHostRoute 向当前主机的路由表中添加一条主机路由规则
+// 发往ipn的流量会从dev设备发往gw
+// forked from plugins/pkg/ip/route_linux.go
+func AddHostRoute(ipn *net.IPNet, gw net.IP, dev netlink.Link) error {
+	return netlink.RouteAdd(&netlink.Route{
+		LinkIndex: dev.Attrs().Index,
+		// Scope:     netlink.SCOPE_HOST,
+		Dst: ipn,
+		Gw:  gw,
+	})
+}
+
+// SetIptablesForDeviceToFarwordAccept 允许经过指定的网络接口（device）的数据包被转发到其他 IP 地址
+func SetIptablesForDeviceToFarwordAccept(device *netlink.Device) error {
+	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
+	if err != nil {
+		utils.WriteLog("这里 NewWithProtocol 失败, err: ", err.Error())
+		return err
+	}
+	err = ipt.Append("filter", "FORWARD", "-i", device.Attrs().Name, "-j", "ACCEPT")
+	if err != nil {
+		utils.WriteLog("这里 ipt.Append 失败, err: ", err.Error())
 		return err
 	}
 	return nil

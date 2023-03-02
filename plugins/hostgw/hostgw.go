@@ -5,10 +5,13 @@ import (
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/elpsyr/cni/pkg/cni"
 	"github.com/elpsyr/cni/pkg/consts"
-	"github.com/elpsyr/cni/pkg/net"
+	cninet "github.com/elpsyr/cni/pkg/net"
 	"github.com/elpsyr/cni/pkg/skel"
 	"github.com/elpsyr/cni/pkg/utils"
 	"github.com/elpsyr/ipam"
+	"github.com/vishvananda/netlink"
+	"net"
+	"os"
 )
 
 const MODE = consts.MODE_HOST_GW
@@ -56,7 +59,7 @@ func (h HostGatewayCNI) Bootstrap(args *skel.CmdArgs, pluginConfig *cni.PluginCo
 	// podIP = podIP + "/" + ipamClient.MaskSegment
 	podIP = podIP + "/" + "24"
 
-	err = net.CreateBridgeAndCreateVethAndSetNetworkDeviceStatusAndSetVethMaster(bridgeName, gatewayWithMaskSegment, ifName, podIP, mtu, netns)
+	err = cninet.CreateBridgeAndCreateVethAndSetNetworkDeviceStatusAndSetVethMaster(bridgeName, gatewayWithMaskSegment, ifName, podIP, mtu, netns)
 	if err != nil {
 		utils.WriteLog("执行创建网桥, 创建 veth 设备, 添加默认路由等操作失败, err: ", err.Error())
 		// Todo : release  ip if failed
@@ -69,11 +72,59 @@ func (h HostGatewayCNI) Bootstrap(args *skel.CmdArgs, pluginConfig *cni.PluginCo
 
 	// Todo 跨节点通讯
 
-	//gateway, err := ipamClient.Gateway()
-	//if err != nil {
-	//	utils.WriteLog("获取当前节点网关出错, err: ", err.Error())
-	//}
-	panic("implement me")
+	gateway, err := ipamClient.Gateway()
+	if err != nil {
+		utils.WriteLog("获取当前节点网关出错, err: ", err.Error())
+	}
+
+	networks, err := ipamClient.AllHostNetwork()
+	if err != nil {
+		utils.WriteLog("这里的获取所有节点的网络信息失败, err: ", err.Error())
+		return nil, err
+	}
+	// 然后获取一下本机的网卡信息
+	hostname, err := os.Hostname()
+	if err != nil {
+		utils.WriteLog("这里的获取本机hostname信息失败, err: ", err.Error())
+	}
+	currentNetwork, err := ipamClient.HostNetwork(hostname)
+	if err != nil {
+		utils.WriteLog("获取本机网卡信息失败, err: ", err.Error())
+		return nil, err
+	}
+
+	// 这里面要做的就是把其他节点上的 pods 的 cidr 和其主机的网卡 ip 作为一条路由规则创建到当前主机上
+	err = cninet.SetOtherHostRouteToCurrentHost(networks, currentNetwork)
+	if err != nil {
+		utils.WriteLog("给主机添加其他节点网络信息失败, err: ", err.Error())
+		return nil, err
+	}
+
+	link, err := netlink.LinkByName(currentNetwork.Name)
+	if err != nil {
+		utils.WriteLog("获取本机网卡失败, err: ", err.Error())
+		return nil, err
+	}
+	err = cninet.SetIptablesForDeviceToFarwordAccept(link.(*netlink.Device))
+	if err != nil {
+		utils.WriteLog("设置本机网卡转发规则失败")
+		return nil, err
+	}
+
+	_gw := net.ParseIP(gateway)
+
+	_, _podIP, _ := net.ParseCIDR(podIP)
+
+	result := &types.Result{
+		CNIVersion: pluginConfig.CNIVersion,
+		IPs: []*types.IPConfig{
+			{
+				Address: *_podIP,
+				Gateway: _gw,
+			},
+		},
+	}
+	return result, nil
 
 }
 
